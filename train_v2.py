@@ -36,9 +36,9 @@ if gpus:
     except RuntimeError as e:
         print(f"Erro ao configurar GPU: {e}")
 
-df_train_final = pd.read_csv('cbis_ddsm_dataset/csv/train.csv')
-df_val = pd.read_csv('cbis_ddsm_dataset/csv/val.csv')
-df_test_new = pd.read_csv('cbis_ddsm_dataset/csv/test.csv')
+df_train_final = pd.read_csv('train.csv')
+df_val = pd.read_csv('val.csv')
+df_test_new = pd.read_csv('test.csv')
 
 df_train_final['pathology_binary'] = df_train_final['pathology_binary'].astype(str)
 df_val['pathology_binary'] = df_val['pathology_binary'].astype(str)
