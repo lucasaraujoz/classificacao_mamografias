@@ -1,5 +1,8 @@
 cbis_ddsm_dataset
 cbis_ddsm.tar.gz
+model*
+nohup.out
+resultados
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
