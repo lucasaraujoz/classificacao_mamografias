@@ -10,6 +10,7 @@ from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
 from sklearn.metrics import classification_report, confusion_matrix, precision_score, recall_score, f1_score, accuracy_score
 import matplotlib.pyplot as plt
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import seaborn as sns
 
 # Configuração GPU
 gpus = tf.config.experimental.list_physical_devices('GPU')
@@ -130,6 +131,18 @@ def save_metrics(run_path, y_true, y_pred, history):
         json.dump(metrics, f, indent=4)
     with open(os.path.join(run_path, "historico.json"), "w") as f:
         json.dump(history.history, f, indent=4)
+    #matriz de confusão
+    cm = confusion_matrix(y_true, y_pred)
+    #usando seaborn para plotar a matriz de confusão e salvar em run_path
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                xticklabels=['Benigno', 'Maligno'],
+                yticklabels=['Benigno', 'Maligno'])
+    plt.title('Matriz de Confusão')
+    plt.xlabel('Predição')
+    plt.ylabel('Real')
+    plt.savefig(os.path.join(run_path, "matriz_confusao.png"))
+    plt.close() 
     return metrics
 
 def save_plot(run_path, history):
