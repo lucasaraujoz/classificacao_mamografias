@@ -247,6 +247,9 @@ def objective(trial):
     checkpoint = ModelCheckpoint(os.path.join(run_path, "model_finetuned.keras"), monitor="val_loss", save_best_only=True)
     history2 = model.fit(train_gen, validation_data=val_gen, epochs=FINE_TUNE_EPOCHS, callbacks=[checkpoint], verbose=1)
 
+    # Carregar o melhor modelo do fine-tuning
+    model.load_weights(os.path.join(run_path, "model_finetuned.keras"))
+    print(f"==> Carregando o melhor modelo do fine-tuning...")
     # Avaliação
     y_true = df_val_pairs['pathology_binary'].astype(int).values
     val_preds = model.predict(val_gen)
