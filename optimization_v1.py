@@ -28,8 +28,8 @@ BATCH_SIZE = 32
 TARGET_SIZE = (224, 224)
 INPUT_SHAPE = (224, 224, 3)
 FREEZE_EPOCHS = 10
-FINE_TUNE_EPOCHS = 10
-
+FINE_TUNE_EPOCHS = 20
+N_TRIALS = 20
 # ===== DADOS ====
 df_train_final = pd.read_csv('train.csv')
 df_val = pd.read_csv('val.csv')
@@ -274,14 +274,38 @@ def objective(trial):
 
     metrics = save_metrics(run_path, y_true, y_pred, history1)
     save_plot(run_path, history1)
+    # Salvar resultado do trial em CSV
+    result_row = {
+        "trial": trial.number,
+        "run_path": run_path,
+        "backbone": backbone,
+        "lr": lr,
+        "fine_tune_lr": fine_tune_lr,
+        "dense_units": dense_units,
+        "dropout": dropout_rate,
+        "use_l2": use_l2,
+        "augment": use_augment,
+        "unfreeze_layers": unfreeze_layers,
+        "accuracy": metrics["accuracy"],
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "f1_score": metrics["f1_score"]
+    }
 
+    results_path = "resultados/todos_os_trials.csv"
+    df_result = pd.DataFrame([result_row])
+    if not os.path.exists(results_path):
+        df_result.to_csv(results_path, index=False)
+    else:
+        df_result.to_csv(results_path, mode='a', header=False, index=False)
+    
     tf.keras.backend.clear_session()
     return metrics["accuracy"]
 
 # ==== EXECUÇÃO ====
 if __name__ == "__main__":
     study = optuna.create_study(direction="maximize")
-    study.optimize(objective, n_trials=10)  # Teste com 3 trials inicialmente
+    study.optimize(objective, n_trials=N_TRIALS)  # Teste com 3 trials inicialmente
 
     with open("resultados/resumo_study.json", "w") as f:
         json.dump({
