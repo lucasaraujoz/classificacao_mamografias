@@ -23,6 +23,9 @@ if gpus:
     except RuntimeError as e:
         print(f"Erro ao configurar GPU: {e}")
 
+# === CONFIGS ===
+STORAGE_PATH = "sqlite:///resultados/optuna_study.db"
+STUDY_NAME = "mamografias_densenet"
 # ==== CONFIG GLOBAL ====
 BATCH_SIZE = 32
 TARGET_SIZE = (224, 224)
@@ -304,7 +307,7 @@ def objective(trial):
 
 # ==== EXECUÇÃO ====
 if __name__ == "__main__":
-    study = optuna.create_study(direction="maximize")
+    study = optuna.create_study(direction="maximize", study_name=STUDY_NAME, storage=STORAGE_PATH, load_if_exists=True)
     study.optimize(objective, n_trials=N_TRIALS)  # Teste com 3 trials inicialmente
 
     with open("resultados/resumo_study.json", "w") as f:
