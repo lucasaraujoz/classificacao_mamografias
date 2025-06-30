@@ -253,7 +253,9 @@ def objective(trial):
     base_model.trainable = True
     for layer in base_model.layers[:-unfreeze_layers]:
         layer.trainable = False
-
+    # Carregar o melhor modelo do treino congelado
+    print(f"==> Carregando os melhores pesos do treino congelado...")
+    model.load_weights(os.path.join(run_path, "model_frozen.keras"))
     print(f"==> Descongelando as últimas {unfreeze_layers} camadas e iniciando fine-tuning...")
 
     model.compile(optimizer=tf.keras.optimizers.Adam(fine_tune_lr),
