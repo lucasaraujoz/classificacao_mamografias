@@ -25,14 +25,14 @@ if gpus:
 
 # === CONFIGS ===
 STORAGE_PATH = "sqlite:///resultados/optuna_study.db"
-STUDY_NAME = "mamografias_densenet"
+STUDY_NAME = "teste_mecanismos_atencao_simam_none"
 # ==== CONFIG GLOBAL ====
 BATCH_SIZE = 32
 TARGET_SIZE = (224, 224)
 INPUT_SHAPE = (224, 224, 3)
-FREEZE_EPOCHS = 10
-FINE_TUNE_EPOCHS = 20
-N_TRIALS = 20
+FREEZE_EPOCHS = 5
+FINE_TUNE_EPOCHS = 25
+N_TRIALS = 10
 # ===== DADOS ====
 df_train_final = pd.read_csv('train.csv')
 df_val = pd.read_csv('val.csv')
@@ -48,6 +48,49 @@ df_cc = df_pairs[df_pairs['image view'] == 'CC'].rename(columns={'image file pat
 df_mlo = df_pairs[df_pairs['image view'] == 'MLO'].rename(columns={'image file path': 'path_mlo'})
 df_paired = pd.merge(df_cc, df_mlo, on=['patient_id', 'left or right breast', 'pathology_binary'])
 
+
+class SimAM(tf.keras.layers.Layer):
+    def __init__(self, e_lambda=1e-4, **kwargs):
+        super(SimAM, self).__init__(**kwargs)
+        self.e_lambda = e_lambda
+
+    def call(self, x):
+        # x: [B, H, W, C]
+        # Transpor para [B, C, H, W] se necessário, dependendo do seu modelo
+        # Calcula a média espacial por canal
+        mean = tf.reduce_mean(x, axis=[1, 2], keepdims=True)
+        # Desvio ao quadrado (x - mean)^2
+        d = tf.square(x - mean)
+        # Número de elementos espaciais (H * W - 1)
+        h, w = tf.shape(x)[1], tf.shape(x)[2]
+        n = tf.cast(h * w - 1, tf.float32)
+        # Variância espacial por canal (soma sem keepdims)
+        var = tf.reduce_sum(d, axis=[1, 2], keepdims=True) / n
+        # Equação do paper: attention = sigmoid( (x - mean)^2 / (4*(var + lambda)) + 0.5 )
+        e_inv = d / (4.0 * (var + self.e_lambda)) + 0.5
+        attention = tf.sigmoid(e_inv)
+        return x * attention
+
+
+def se_block(input_tensor, ratio=16):
+    filters = input_tensor.shape[-1]
+    se = layers.GlobalAveragePooling2D()(input_tensor)
+    se = layers.Dense(filters // ratio, activation='relu')(se)
+    se = layers.Dense(filters, activation='sigmoid')(se)
+    se = layers.Reshape((1, 1, filters))(se)
+    return layers.Multiply()([input_tensor, se])
+
+
+def eca_block(input_tensor, k_size=3):
+    filters = input_tensor.shape[-1]
+    x = layers.GlobalAveragePooling2D()(input_tensor)
+    x = layers.Reshape((filters, 1))(x)
+    x = layers.Conv1D(1, kernel_size=k_size, padding='same', use_bias=False)(x)
+    x = layers.Activation('sigmoid')(x)
+    x = layers.Reshape((1, 1, filters))(x)
+    return layers.Multiply()([input_tensor, x])
+
+
 # Verificar se os paths existem
 def check_paths(df):
     for _, row in df.iterrows():
@@ -58,11 +101,25 @@ def check_paths(df):
 
 check_paths(df_paired)
 
-df_train_pairs, df_val_pairs = train_test_split(
-    df_paired, test_size=0.2,
-    stratify=df_paired['pathology_binary'],
-    random_state=42
-)
+# df_train_pairs, df_test_pairs = train_test_split(
+#     df_paired, test_size=0.2,
+#     stratify=df_paired['pathology_binary'],
+#     random_state=42
+# )
+
+# df_train_pairs, df_val_pairs = train_test_split(
+#     df_train_pairs, test_size=0.125,
+#     stratify=df_train_pairs['pathology_binary'],
+#     random_state=42
+# )
+
+# #salvar os DataFrames para uso posterior
+# df_train_pairs.to_csv('train_pairs.csv', index=False)
+# df_val_pairs.to_csv('val_pairs.csv', index=False)
+# df_test_pairs.to_csv('test_pairs.csv', index=False)
+df_train_pairs = pd.read_csv('train_pairs.csv')
+df_val_pairs = pd.read_csv('val_pairs.csv')
+df_test_pairs = pd.read_csv('test_pairs.csv')
 
 # ==== DUAL IMAGE GENERATOR ====
 datagen = ImageDataGenerator(
@@ -167,7 +224,8 @@ def save_plot(run_path, history):
     plt.close()
 
 # ==== MODELO ====
-def create_model(backbone_name, dense_units, dropout_rate, use_l2):
+
+def create_model(backbone_name, dense_units, dropout_rate, use_l2, use_dense_2=False, attention_module=None):
     input_cc = tf.keras.Input(shape=INPUT_SHAPE, name='input_cc')
     input_mlo = tf.keras.Input(shape=INPUT_SHAPE, name='input_mlo')
 
@@ -182,15 +240,31 @@ def create_model(backbone_name, dense_units, dropout_rate, use_l2):
 
     regularizer = regularizers.l2(1e-4) if use_l2 else None
 
+    def apply_attention(x):
+        if attention_module == "se":
+            return se_block(x)
+        elif attention_module == "eca":
+            return eca_block(x)
+        elif attention_module == "simam":
+            return SimAM()(x)
+        elif attention_module == "none":
+            return x
+        return x
+
     x_cc = base_model(input_cc)
+    x_cc = apply_attention(x_cc)
     x_cc = layers.GlobalAveragePooling2D()(x_cc)
 
     x_mlo = base_model(input_mlo)
+    x_mlo = apply_attention(x_mlo)
     x_mlo = layers.GlobalAveragePooling2D()(x_mlo)
-
     x = layers.Concatenate()([x_cc, x_mlo])
     x = layers.Dense(dense_units, activation='relu', kernel_regularizer=regularizer)(x)
     x = layers.Dropout(dropout_rate)(x)
+    if use_dense_2:
+        x = layers.Dense(dense_units // 2, activation='relu', kernel_regularizer=regularizer)(x)
+        x = layers.Dropout(dropout_rate)(x)
+
     output = layers.Dense(2, activation='softmax')(x)
 
     model = tf.keras.Model(inputs=[input_cc, input_mlo], outputs=output)
@@ -199,14 +273,17 @@ def create_model(backbone_name, dense_units, dropout_rate, use_l2):
 # ==== OBJETIVO OPTUNA ====
 def objective(trial):
     # Hiperparâmetros
-    backbone = trial.suggest_categorical("backbone", ["densenet121", "densenet169", "densenet201"])
+    backbone = trial.suggest_categorical("backbone", ["densenet121"])
     lr = trial.suggest_categorical("lr", [1e-3])
     fine_tune_lr = trial.suggest_categorical("fine_tune_lr", [1e-4])
-    dense_units = trial.suggest_categorical("dense_units", [64, 128, 256])
-    dropout_rate = trial.suggest_categorical("dropout", [0.3, 0.5])
+    dense_units = trial.suggest_categorical("dense_units", [256])
+    use_dense_2 = trial.suggest_categorical("use_dense_2", [False, False]) #sem usar duas camadas ocultas
+    dropout_rate = trial.suggest_categorical("dropout", [0.4])
     use_l2 = trial.suggest_categorical("use_l2", [True])
     use_augment = trial.suggest_categorical("augment", [True])
-    unfreeze_layers = trial.suggest_int("unfreeze_layers", 30, 150)  # novo hiperparâmetro
+    unfreeze_layers = trial.suggest_categorical("unfreeze_layers", [54])  # novo hiperparâmetro
+    attention_module = trial.suggest_categorical("attention_module", ["none", "simam"])
+
 
     run_path = get_next_run_path(backbone)
     save_config(run_path, {
@@ -218,20 +295,25 @@ def objective(trial):
         "l2": use_l2,
         "augment": use_augment,
         "unfreeze_layers": unfreeze_layers,
-        "batch_size": BATCH_SIZE
+        "batch_size": BATCH_SIZE,
+        "use_dense_2": use_dense_2,
+        "dense_units_2": dense_units//2 if use_dense_2 else "N/A",
+        "attention_module": attention_module
     })
     print("\n" + "="*50)
     print(f"Trial {trial.number} - Config:")
     print(f"Backbone: {backbone}, LR: {lr:.1e}, Dense Units: {dense_units}")
     print(f"Dropout: {dropout_rate}, L2: {use_l2}, Augment: {use_augment}")
+    print(f"Unfreeze Layers: {unfreeze_layers}, Use Dense 2: {use_dense_2}, Attention Module: {attention_module}")
     print("="*50 + "\n")
 
 
     train_gen = DualImageGenerator(df_train_pairs, BATCH_SIZE, TARGET_SIZE, augment=use_augment, shuffle=True)
     val_gen = DualImageGenerator(df_val_pairs, BATCH_SIZE, TARGET_SIZE, shuffle=False)
+    test_gen = DualImageGenerator(df_test_pairs, BATCH_SIZE, TARGET_SIZE, shuffle=False)
 
     # Criar modelo
-    model, base_model = create_model(backbone, dense_units, dropout_rate, use_l2)
+    model, base_model = create_model(backbone, dense_units, dropout_rate, use_l2, use_dense_2, attention_module=attention_module)
     
     # Congelar todo o backbone inicialmente
     base_model.trainable = False
@@ -254,8 +336,8 @@ def objective(trial):
     for layer in base_model.layers[:-unfreeze_layers]:
         layer.trainable = False
     # Carregar o melhor modelo do treino congelado
-    print(f"==> Carregando os melhores pesos do treino congelado...")
-    model.load_weights(os.path.join(run_path, "model_frozen.keras"))
+    # print(f"==> Carregando os melhores pesos do treino congelado...") # TODO PROVAVELMENTE PIOROU QUANDO CARREGA OS PESOS DO TREINO CONGELADO
+    # model.load_weights(os.path.join(run_path, "model_frozen.keras"))
     print(f"==> Descongelando as últimas {unfreeze_layers} camadas e iniciando fine-tuning...")
 
     model.compile(optimizer=tf.keras.optimizers.Adam(fine_tune_lr),
@@ -269,9 +351,9 @@ def objective(trial):
     model.load_weights(os.path.join(run_path, "model_finetuned.keras"))
     print(f"==> Carregando o melhor modelo do fine-tuning...")
     # Avaliação
-    y_true = df_val_pairs['pathology_binary'].astype(int).values
-    val_preds = model.predict(val_gen)
-    y_pred = np.argmax(val_preds, axis=1)
+    y_true = df_test_pairs['pathology_binary'].astype(int).values
+    preds = model.predict(test_gen)
+    y_pred = np.argmax(preds, axis=1)
 
     # Histórico completo
     full_history = {k: history1.history.get(k, []) + history2.history.get(k, []) for k in set(history1.history) | set(history2.history)}
@@ -294,15 +376,32 @@ def objective(trial):
         "accuracy": metrics["accuracy"],
         "precision": metrics["precision"],
         "recall": metrics["recall"],
-        "f1_score": metrics["f1_score"]
+        "f1_score": metrics["f1_score"],
+        "use_dense_2": use_dense_2,
+        "dense_units_2": dense_units//2 if use_dense_2 else "N/A",
+        "attention_module": attention_module
     }
+    csv_path = "resultados/todos_os_trials.csv"
 
-    results_path = "resultados/todos_os_trials.csv"
     df_result = pd.DataFrame([result_row])
-    if not os.path.exists(results_path):
-        df_result.to_csv(results_path, index=False)
+
+    # Garante que todas as colunas estejam presentes
+    expected_columns = [
+        "trial", "run_path", "backbone", "lr", "fine_tune_lr", "dense_units", "dropout",
+        "use_l2", "augment", "unfreeze_layers", "accuracy", "precision", "recall", "f1_score",
+        "use_dense_2", "dense_units_2", "attention_module"
+    ]
+
+    df_result = df_result.reindex(columns=expected_columns)
+
+    if os.path.exists(csv_path):
+        df_existing = pd.read_csv(csv_path)
+        df_existing = df_existing.reindex(columns=expected_columns)
+        df_all = pd.concat([df_existing, df_result], ignore_index=True)
+        df_all.to_csv(csv_path, index=False)
     else:
-        df_result.to_csv(results_path, mode='a', header=False, index=False)
+        df_result.to_csv(csv_path, index=False)
+
     
     tf.keras.backend.clear_session()
     return metrics["accuracy"]
